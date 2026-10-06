@@ -1,0 +1,18 @@
+[project]
+name = "hunter-vs-prey-sl"
+version = "0.1.0"
+description = "Supervised learning (behavioural cloning) for the Hunter vs Prey bots"
+requires-python = ">=3.10,<3.14"
+dependencies = ["torch", "numpy", "matplotlib"]
+
+[tool.uv]
+package = false
+
+# CPU build of PyTorch: the models are tiny MLPs, a GPU isn't needed.
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

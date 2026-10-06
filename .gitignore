@@ -1,0 +1,44 @@
+# Unity generated
+/[Ll]ibrary/
+/[Tt]emp/
+/[Oo]bj/
+/[Bb]uild/
+/[Bb]uilds/
+/[Ll]ogs/
+/[Uu]ser[Ss]ettings/
+/[Mm]emoryCaptures/
+/[Rr]ecordings/
+
+# IDE / project files (Unity regenerates these)
+.vs/
+.vscode/
+.idea/
+*.csproj
+*.sln
+*.suo
+*.user
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+sysinfo.txt
+*.apk
+*.aab
+*.unitypackage
+crashlytics-buildid.txt
+
+# Python (SL training)
+SL/.venv/
+SL/uv.lock
+__pycache__/
+*.pyc
+
+# Local debug output
+stuck_spots.txt
+
+# OS
+.DS_Store
+Thumbs.db
