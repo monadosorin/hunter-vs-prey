@@ -42,3 +42,7 @@ stuck_spots.txt
 # OS
 .DS_Store
 Thumbs.db
+
+# Unity crash-recovery scene backups
+[Aa]ssets/_Recovery/
+[Aa]ssets/_Recovery.meta

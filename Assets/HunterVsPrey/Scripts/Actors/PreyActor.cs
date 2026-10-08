@@ -10,7 +10,7 @@ namespace HunterVsPrey
         public const float TagInvulnerability = 1.5f;
         public const float TagBoost = 1.6f, TagBoostTime = 3f; // +60% speed for 3 s after a tag (outlasts the i-frames)
         public const float MarkRange = 35f, MarkAngle = 8f;     // RMB: the ball must be near the crosshair and in sight
-        public const float LocateCooldown = 20f, LocateRevealTime = 5f; // F: shows where my own ball is
+        public const float MarkCooldown = 20f, MarkDuration = 10f; // a shown ball has an indicator for every Prey for 10 s
 
         public PreyColor Color { get; private set; }
         public readonly List<Bucket> Carried = new();
@@ -19,10 +19,8 @@ namespace HunterVsPrey
         public float InvulnLeft { get; private set; }
         /// <summary>When this Prey last fired (SL labels a human's shot as "Fight").</summary>
         public float LastFireTime { get; private set; } = -99f;
-        public float LocateCd { get; private set; }
-        /// <summary>When this Prey last used "find my ball" (its own balls are revealed for a few seconds).</summary>
-        public float LastLocateTime { get; private set; } = -99f;
-        public bool Locating => Time.time - LastLocateTime < LocateRevealTime;
+        /// <summary>Cooldown of "show a teammate their ball" (RMB).</summary>
+        public float MarkCd { get; private set; }
         public bool Escaped { get; private set; }
         public bool Dead => Hp <= 0;
 
@@ -43,14 +41,13 @@ namespace HunterVsPrey
             base.TickTimers(dt);
             ReloadLeft = Mathf.Max(0f, ReloadLeft - dt);
             InvulnLeft = Mathf.Max(0f, InvulnLeft - dt);
-            LocateCd = Mathf.Max(0f, LocateCd - dt);
+            MarkCd = Mathf.Max(0f, MarkCd - dt);
         }
 
         protected override void UseAbilities(in ActorInput i)
         {
             if (i.primary && HasAmmo) Fire();
-            if (i.mark) TryMarkBall();
-            if (i.locate && LocateCd <= 0f) { LocateCd = LocateCooldown; LastLocateTime = Time.time; }
+            if (i.mark && MarkCd <= 0f) TryMarkBall();
         }
 
         /// <summary>The unmarked ball closest to the crosshair (within range, in line of sight), or null.</summary>
@@ -71,13 +68,24 @@ namespace HunterVsPrey
             return best;
         }
 
-        /// <summary>Highlight a ball for every Prey until someone collects it.</summary>
+        /// <summary>Show a ball to every Prey for a few seconds (then it's on cooldown).</summary>
         void TryMarkBall()
         {
             var b = BallInSights();
             if (!b) return;
-            b.Mark();
-            match.Log($"{DisplayName} marked {b.Color}'s ball");
+            b.Mark(MarkDuration);
+            MarkCd = MarkCooldown;
+            match.Log($"{DisplayName} showed {b.Color} where their ball is");
+        }
+
+        /// <summary>
+        /// Painting a Hunter who camps a dropped bucket speeds up the reload: 20 s × (Prey alive / 4),
+        /// so the fewer Prey are left, the sooner they can fire again.
+        /// </summary>
+        public void OnHitCamper(int preyAlive)
+        {
+            float reload = ReloadTime * preyAlive / 4f;
+            ReloadLeft = Mathf.Min(ReloadLeft, Mathf.Max(0f, reload - (Time.time - LastFireTime)));
         }
 
         void Fire()
@@ -126,6 +134,7 @@ namespace HunterVsPrey
         {
             Escaped = true;
             SetPresent(false);
+            foreach (var b in Carried) b.gameObject.SetActive(false); // the buckets leave with you (else they'd float at the Gate)
         }
     }
 }

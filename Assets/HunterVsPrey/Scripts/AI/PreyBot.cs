@@ -8,7 +8,9 @@ namespace HunterVsPrey
     ///   Prey (selector)
     ///   ├─ Escape     Gate known, buckets full, fuzzy Commit ≥ Danger     → Run to the Gate
     ///   ├─ Fight      Hunter visible, loaded, fuzzy ShootDesire ≥ 0.60    → Aim (with lead) and shoot
-    ///   ├─ Evade      fuzzy Danger ≥ 0.40 and Danger > Commit             → Flee to cover, glancing back
+    ///   ├─ Break Camp a Hunter is camping a dropped bucket, loaded,
+    ///   │             fuzzy Courage ≥ 0.50                                 → Sneak into paintball range of the camper
+    ///   ├─ Evade      fuzzy Danger ≥ 0.40 and Danger > Commit             → Flee to cover, glancing back, peek
     ///   ├─ Collect    a ball for my bucket is known                        → Get it
     ///   ├─ Take Over  my buckets are full, a dropped bucket is known       → Pick it up
     ///   └─ Explore    search unseen areas, away from known Hunters
@@ -32,6 +34,12 @@ namespace HunterVsPrey
         public static readonly FuzzySystem CommitFis = new("Commit", 3);
         /// <summary>Is this a good moment for my one paintball? (distance, Hunter approaching?, danger)</summary>
         public static readonly FuzzySystem ShootFis = new("Shoot desire", 3);
+        /// <summary>
+        /// Dare to go fight a Hunter camping a dropped bucket? (distance to the camper, my HP, Prey alive)
+        /// A hit stuns the camper 5 s per living Hunter and reloads in 20 × alive/4 s, so the fewer Prey are left,
+        /// the more it pays off (and the more it's needed).
+        /// </summary>
+        public static readonly FuzzySystem CourageFis = new("Courage", 3);
 
         static PreyBot()
         {
@@ -89,6 +97,21 @@ namespace HunterVsPrey
                 .Rule(range["Long"], "Low")
                 .Rule(threat["High"] & range["Good"], "High")
                 .Rule(threat["Low"] & !range["PointBlank"], "Low"); // not a threat: save the ball
+
+            var campDist = CourageFis.Input("CamperDistance", 0f, 60f)
+                .Term("Near", Mf.Left(10f, 20f)).Term("Mid", Mf.Tri(12f, 25f, 40f)).Term("Far", Mf.Right(30f, 45f));
+            var myHp = CourageFis.Input("MyHp", 1f, 2f)
+                .Term("Low", Mf.Left(1f, 2f)).Term("Full", Mf.Right(1f, 2f));
+            var alive = CourageFis.Input("PreyAlive", 1f, 4f)
+                .Term("Few", Mf.Left(1.5f, 3f)).Term("Many", Mf.Right(2f, 3.5f));
+            CourageFis.Output01("Courage");
+            CourageFis
+                .Rule(myHp["Full"] & !campDist["Far"], "High")
+                .Rule(myHp["Full"] & campDist["Far"], "Medium")
+                .Rule(myHp["Low"] & campDist["Near"] & alive["Few"], "High") // last ones standing: no choice
+                .Rule(myHp["Low"] & campDist["Near"] & alive["Many"], "Medium")
+                .Rule(myHp["Low"] & !campDist["Near"], "Low")
+                .Rule(alive["Few"] & !campDist["Far"], "High"); // fast reload, and the bucket is needed
         }
 
         // ======================= Blackboard =======================
@@ -114,6 +137,23 @@ namespace HunterVsPrey
         readonly System.Collections.Generic.Dictionary<HunterActor, float> stunnedUntil = new();
         Vector3 fleePoint, aimError;
         float fleeTimer, glanceBackTimer;
+
+        // Staying calm (no back-and-forth): keep an escape spot for a while, commit to fleeing for a moment once
+        // started, rest a moment before starting again, and peek back from cover before deciding what next.
+        const float FleeHold = 2.5f, MinEvade = 2f, EvadeRest = 1.5f, PeekTime = 1f, PeekMinDist = 14f;
+        float evadeSince = -99f, evadeEnded = -99f, peekLeft;
+        bool wasEvading, peeked;
+
+        // A Hunter's X-Ray is on (every Prey sees the warning on their HUD): they know where I am → keep moving.
+        float exposedUntil = -99f;
+        bool xrayWasOn;
+        bool Exposed => Time.time < exposedUntil;
+
+        // a Hunter believed to be camping a dropped bucket (from where I last saw / heard it)
+        HunterActor camper;
+        Vector3 camperPos, shotSpot;
+        float camperDist, courage, shotTimer;
+        bool camperSeen;
 
         // ======================= Supervised learning =======================
 
@@ -162,6 +202,9 @@ namespace HunterVsPrey
                 new Sequence("Fight",
                     new Condition("good shot", () => shootDesire >= 0.6f),
                     new BtAction("Aim & shoot", Shoot)),
+                new Sequence("Break Camp",
+                    new Condition("camper known, brave enough", () => camper && prey.HasAmmo && courage >= (tree.WasActive("Break Camp") ? 0.4f : 0.5f)),
+                    new BtAction("Get in range of the camper", BreakCamp)),
                 new Sequence("Evade",
                     new Condition("in danger", InDanger),
                     new BtAction("Flee to cover", Flee)),
@@ -184,16 +227,23 @@ namespace HunterVsPrey
             SenseObjects();
             ChooseGoal();
             PlanMark();
+            SenseXray();
             output = new ActorInput();
             previous = current;
-            if (UsesSL) DecideSL();
+            if (UsesSL) { DecideSL(); TrackEvade(current == Act.Evade); }
             else
             {
                 commit = CommitFis.Evaluate(goal == Goal.None ? 60f : goalDist, danger, match.TimeLeft);
-                shootDesire = threatSeen && prey.HasAmmo ? ShootFis.Evaluate(threatDist, closingSpeed, danger) : 0f;
-                // a Hunter camping a dropped bucket gets a 5× stun: always worth the paintball
-                if (threatSeen && prey.HasAmmo && threatDist < 20f && match.DroppedBucketNear(threatPos)) shootDesire = Mathf.Max(shootDesire, 0.75f);
+                // a Hunter camping a dropped bucket: aim at the camper (long stun + fast reload make it always worth it)
+                if (camper && camperSeen && prey.HasAmmo && camperDist < 22f)
+                {
+                    threat = camper; threatPos = camperPos; threatDist = camperDist; threatSeen = true;
+                    shootDesire = 0.8f;
+                }
+                else shootDesire = threatSeen && prey.HasAmmo ? ShootFis.Evaluate(threatDist, closingSpeed, danger) : 0f;
+                courage = camper ? CourageFis.Evaluate(camperDist, prey.Hp, PreyAlive()) : 0f;
                 tree.Tick();
+                TrackEvade(tree.IsActive("Evade"));
                 current = Label();
                 TraceDecision();
             }
@@ -205,17 +255,19 @@ namespace HunterVsPrey
 
         Ball markTarget;
 
-        /// <summary>Spotted another ball nobody has marked yet and no Hunter is on me → look at it so it can be marked.</summary>
+        /// <summary>Spotted a teammate's ball, the ability is ready and no Hunter is on me → look at it so it can be shown.</summary>
         void PlanMark()
         {
             markTarget = null;
             lookOverride = null;
             bool safe = threat == null || threatDist > 15f || perception.Age(threat) > 3f;
-            if (!safe) return;
+            if (!safe || prey.MarkCd > 0f) return;
             foreach (var ball in match.Balls.Values)
             {
                 if (!ball || ball.Marked || !perception.Noticed(ball)) continue;
                 if (prey.Carried.Exists(b => b.Color == ball.Color)) continue; // my own: just go get it
+                var bucket = match.Buckets[ball.Color];
+                if (bucket.Dropped || !bucket.Holder.IsActive) continue; // nobody to show it to
                 if (Vector3.Distance(ball.transform.position, prey.EyePos) > PreyActor.MarkRange) continue;
                 markTarget = ball;
                 lookOverride = ball.transform.position;
@@ -226,9 +278,6 @@ namespace HunterVsPrey
         void UseAbilities()
         {
             if (markTarget && prey.BallInSights() == markTarget) output.mark = true;
-            // nothing to collect and no idea where my ball is → "find my ball" (when no Hunter is close)
-            bool hunterNear = threat && threatDist < 15f && perception.Age(threat) < 3f;
-            if (!prey.AllCarriedFull && goal == Goal.None && prey.LocateCd <= 0f && !hunterNear) output.locate = true;
         }
 
         // ======================= Recording a human (shadow mode) =======================
@@ -278,8 +327,16 @@ namespace HunterVsPrey
         /// <summary>Which top-level branch the BT ran this frame (the training label).</summary>
         Act Label()
         {
+            if (tree.IsActive("Break Camp")) return Act.Fight; // going to fight the camper counts as fighting
             for (int k = 0; k < BranchNames.Length; k++) if (tree.IsActive(BranchNames[k])) return (Act)k;
             return Act.Explore;
+        }
+
+        int PreyAlive()
+        {
+            int n = 0;
+            foreach (var p in match.Prey) if (p.IsActive) n++;
+            return n;
         }
 
         float[] Features()
@@ -369,6 +426,9 @@ namespace HunterVsPrey
             threatSeen = false;
             threatDist = float.PositiveInfinity;
             closingSpeed = 0f;
+            camper = null;
+            camperSeen = false;
+            camperDist = float.PositiveInfinity;
             exploreAvoid.Clear();
             known.Clear();
             foreach (var h in match.Hunters)
@@ -379,17 +439,31 @@ namespace HunterVsPrey
                 if (!perception.Recall(h, 20f, out var pos)) continue;
                 exploreAvoid.Add(pos);
                 float age = perception.Age(h);
-                if (age > 8f) continue;
+                if (age > 6f) continue; // too old to act on: stop worrying and get back to work (still avoided when exploring)
                 Vector3 toMe = prey.transform.position - pos; toMe.y = 0;
                 float closing = Vector3.Dot(perception.LastVelocity(h), toMe.normalized); // + = coming at me
-                // Dead reckoning: if it was chasing me when I last saw it, assume it still is
-                // ("it's probably right behind me") instead of trusting a stale position.
+                // Out of sight: remember where it was last and work out where it probably is now.
+                //  · it was chasing me → assume it kept coming for a moment (at most 1.5 s worth: past that it's a
+                //    guess, and a guess that follows me around kept the bot running from nothing)
+                //  · it was moving elsewhere → it kept going that way for a bit (snapped to where it can walk)
+                //  · it was standing still (camping, guarding) → it's still there
                 if (!seen && closing > 0.5f && age < 4f)
-                    pos += toMe.normalized * Mathf.Min(HunterRunSpeed * age, Mathf.Max(0f, toMe.magnitude - 1.5f));
+                    pos += toMe.normalized * Mathf.Min(HunterRunSpeed * Mathf.Min(age, 1.5f), Mathf.Max(0f, toMe.magnitude - 3f));
+                else if (!seen && age > 0.3f)
+                {
+                    Vector3 drift = perception.LastVelocity(h) * Mathf.Min(age, 1.5f);
+                    if (drift.sqrMagnitude > 0.25f) pos = Arena.Snap(pos + drift, 3f) ?? pos;
+                }
                 float d = Vector3.Distance(pos, prey.transform.position);
                 if (seen && h.Stunned) stunnedUntil[h] = Time.time + h.StunLeft; // it's flashing
                 bool stunned = stunnedUntil.TryGetValue(h, out var until) && Time.time < until;
                 known.Add(new HunterInfo { h = h, pos = pos, dist = d, age = age, closing = closing, seen = seen, stunned = stunned });
+
+                // camping a dropped bucket (as far as I know) and not already stunned → a target worth going for
+                if (!stunned && age < 6f && d < camperDist && match.DroppedBucketNear(pos))
+                {
+                    camper = h; camperPos = pos; camperDist = d; camperSeen = seen;
+                }
             }
             known.Sort((a, b) => a.dist.CompareTo(b.dist));
 
@@ -414,7 +488,7 @@ namespace HunterVsPrey
 
         /// <summary>
         /// Balls and the Gate: by sight, then called out to teammates. What every Prey (human or bot) also gets on
-        /// their HUD is known directly: marked balls, dropped buckets, and my own ball while "find my ball" is active.
+        /// their HUD is known directly: balls a teammate is showing, and dropped buckets.
         /// </summary>
         void SenseObjects()
         {
@@ -423,9 +497,10 @@ namespace HunterVsPrey
                 var ball = kv.Value;
                 if (!ball) continue;
                 Vector3 p = ball.transform.position;
-                if (perception.Observe(ball, Vision.CanSeePoint(prey, p), p) && ShareBallSightings) Callout(ball, p, 5f);
-                bool mine = prey.Carried.Exists(b => b.Color == kv.Key);
-                if (ball.Marked || mine && prey.Locating) perception.Inform(ball, p);
+                // Seen directly, or a teammate is showing it and its indicator is in my view (the indicator shows
+                // through walls, but only once I look its way — same 110° cone and reaction time as seeing it).
+                bool indicatorInView = ball.Marked && Vector3.Angle(prey.Eye.forward, p - prey.EyePos) < Vision.Fov * 0.5f;
+                if (perception.Observe(ball, Vision.CanSeePoint(prey, p) || indicatorInView, p) && ShareBallSightings) Callout(ball, p, 5f);
             }
             foreach (var b in match.Buckets.Values)
             {
@@ -476,9 +551,39 @@ namespace HunterVsPrey
         bool InDanger()
         {
             bool fleeing = tree.WasActive("Evade");
+            if (fleeing && Time.time - evadeSince < MinEvade && danger >= 0.15f) return true; // started running: commit to it
+            if (!fleeing && Time.time - evadeEnded < EvadeRest && danger < 0.6f) return false; // just calmed down: don't bounce back
             if (danger < (fleeing ? 0.3f : 0.4f)) return false;
             if (goal == Goal.None) return true; // nothing worth risking it for
             return danger > commit - (fleeing ? 0.1f : 0f);
+        }
+
+        /// <summary>When fleeing started / stopped (for the commit + rest times); a fresh flee starts with a fresh escape spot.</summary>
+        void TrackEvade(bool evading)
+        {
+            if (evading && !wasEvading) { evadeSince = Time.time; fleeTimer = 0f; peekLeft = 0f; peeked = false; }
+            if (!evading && wasEvading)
+            {
+                evadeEnded = Time.time;
+                peekLeft = 0f;
+                NewExploreTarget(); // the old one may lead straight back to the Hunter
+            }
+            wasEvading = evading;
+        }
+
+        /// <summary>
+        /// The X-Ray warning every Prey gets on their HUD: the Hunters can see me for a few seconds, so hiding
+        /// in place is pointless → no peeking, and if I was just exploring, go somewhere else (away from known Hunters).
+        /// </summary>
+        void SenseXray()
+        {
+            bool on = match.TeamXrayLeft > 0f;
+            if (on && !xrayWasOn)
+            {
+                exposedUntil = Time.time + HunterActor.XrayDuration + 2f;
+                NewExploreTarget();
+            }
+            xrayWasOn = on;
         }
 
         /// <summary>Walk to the goal's last known spot; forget it if we get there and it's gone.</summary>
@@ -509,11 +614,37 @@ namespace HunterVsPrey
 
         BtStatus Flee()
         {
-            fleeTimer -= dt;
-            if (fleeTimer <= 0f || Arrived(1.5f))
+            Vector3 lookBack = threatPos + Vector3.up * 1.2f;
+            // reached cover: stop and look back for a moment before deciding what next (like a human peeking)
+            if (peekLeft > 0f)
             {
-                fleeTimer = 0.8f;
+                peekLeft -= dt;
+                if (!threatSeen && !Exposed && threatDist > PeekMinDist)
+                {
+                    output = Drive(Vector3.zero, lookBack, false, dt);
+                    return BtStatus.Running;
+                }
+                peekLeft = 0f; // it's still there (or they can see me): keep running
+            }
+            fleeTimer -= dt;
+            bool arrived = Arrived(1.5f);
+            // only when it's (believed) far: stopping with a Hunter just around the corner gets you tagged
+            if (arrived && !peeked && !threatSeen && !Exposed && threatDist > PeekMinDist)
+            {
+                peeked = true;
+                peekLeft = PeekTime;
+                output = Drive(Vector3.zero, lookBack, false, dt);
+                return BtStatus.Running;
+            }
+            // Keep the same escape spot for a while (re-picking it every moment made the bot zig-zag).
+            // Change it early only when it's reached or the Hunter is now closer to it than I am.
+            Vector3 me = prey.transform.position;
+            bool cutOff = Vector3.Distance(fleePoint, threatPos) < Vector3.Distance(fleePoint, me);
+            if (fleeTimer <= 0f || arrived || cutOff)
+            {
+                fleeTimer = FleeHold;
                 fleePoint = PickFleePoint(threatPos);
+                peeked = false;
             }
             // glance back now and then to keep track of the chaser
             // (long enough to turn ~150° and re-notice it: 0.5 s turning + 0.2–0.3 s reaction)
@@ -528,6 +659,38 @@ namespace HunterVsPrey
         {
             output = Glance(Travel(ExploreTarget(dt), dt), dt);
             return BtStatus.Running;
+        }
+
+        /// <summary>
+        /// Sneak to a spot 10–14 m from where the camper should be, with a clear line of fire, keeping my eyes on it.
+        /// Once it's in sight the Fight branch (higher priority) takes the shot.
+        /// </summary>
+        BtStatus BreakCamp()
+        {
+            shotTimer -= dt;
+            if (shotTimer <= 0f || Arrived(1.5f))
+            {
+                shotTimer = 1f;
+                shotSpot = PickShotSpot(camperPos);
+            }
+            output = Travel(shotSpot, dt, camperPos + Vector3.up * 1.2f);
+            return BtStatus.Running;
+        }
+
+        Vector3 PickShotSpot(Vector3 target)
+        {
+            Vector3 me = prey.transform.position;
+            Vector3 best = Arena.Snap(target, 3f) ?? target;
+            float bestLen = float.PositiveInfinity;
+            for (int k = 0; k < 12; k++)
+            {
+                var s = Arena.Snap(target + Quaternion.Euler(0, k * 30f, 0) * Vector3.forward * Random.Range(10f, 14f), 2f);
+                if (s == null) continue;
+                if (Physics.Linecast(s.Value + Vector3.up * 1.6f, target + Vector3.up * 1.2f, Layers.EnvMask, QueryTriggerInteraction.Ignore)) continue;
+                float len = Arena.PathLength(me, s.Value, scratch);
+                if (len < bestLen) { bestLen = len; best = s.Value; }
+            }
+            return best;
         }
 
         /// <summary>A reachable spot ~9 m away, away from the Hunter, preferably out of its line of sight.</summary>
@@ -561,7 +724,8 @@ namespace HunterVsPrey
         }
 
         protected override string FuzzySummary() =>
-            (UsesSL ? "" : $"danger {danger:0.00}  ·  commit {commit:0.00}  ·  shoot {shootDesire:0.00}  ·  ") +
+            (UsesSL ? "" : $"danger {danger:0.00}  ·  commit {commit:0.00}  ·  shoot {shootDesire:0.00}  ·  " +
+                           (camper ? $"courage {courage:0.00} vs camper {camperDist:0}m  ·  " : "")) +
             $"{(threat ? $"{threat.DisplayName} {threatDist:0}m" : "no threat")}  ·  goal {goal}{(goal != Goal.None ? $" {goalDist:0}m" : "")}";
     }
 }

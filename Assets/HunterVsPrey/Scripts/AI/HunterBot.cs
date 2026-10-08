@@ -203,7 +203,7 @@ namespace HunterVsPrey
             f[i++] = Feat.N(hunter.TagCd, HunterActor.TagCooldown);
             f[i++] = Feat.B(hunter.PreyInTagReach());
             f[i++] = Feat.B(match.TeamXrayCd <= 0f);
-            f[i++] = Feat.N(match.TeamXrayCd, HunterActor.XrayCooldown);
+            f[i++] = Feat.N(match.TeamXrayCd, match.TeamXrayCdMax);
             f[i++] = Feat.B(hunter.XrayActive);
             f[i++] = Feat.N(sinceContact, 40f);
             f[i++] = Feat.B(match.GateOpen);
@@ -443,12 +443,27 @@ namespace HunterVsPrey
             return BtStatus.Running;
         }
 
-        /// <summary>Go where they were heading when we lost them, look around, give up if they're not there.</summary>
+        /// <summary>
+        /// Lost sight of them: use the last known position and the direction they were running to work out where they
+        /// probably are (dead reckoning), go there, then check the nearby hiding spots — places that are out of sight
+        /// from where they were last seen, preferring the way they were heading. Give up after those.
+        /// </summary>
         BtStatus Investigate()
         {
             perception.Recall(target, 15f, out var last);
-            Vector3 guess = Arena.Snap(last + lostVelocity * 1.5f, 3f) ?? last;
-            GoTo(guess);
+            if (searchFor != target || searchFrom != last)
+            {
+                // new trail: predicted position = last seen + running direction × how long ago (up to 3 s)
+                searchFor = target;
+                searchFrom = last;
+                float age = Mathf.Clamp(perception.Age(target), 1f, 3f);
+                searchPoints.Clear();
+                searchPoints.Add(Arena.Snap(last + lostVelocity * age, 3f) ?? last);
+                AddHidingSpots(last, searchPoints[0]);
+                searchIdx = 0;
+                searchSpin = 0f;
+            }
+            GoTo(searchPoints[searchIdx]);
             if (!Arrived(2f))
             {
                 output = Glance(Drive(Steer(dt), null, true, dt), dt);
@@ -457,8 +472,35 @@ namespace HunterVsPrey
             searchSpin += dt;
             output = Drive(Vector3.zero, null, false, dt);
             output.yawDelta = TurnRate * 0.7f * dt; // look around
-            if (searchSpin > 1.5f) { perception.Forget(target); target = null; searchSpin = 0f; }
+            if (searchSpin > 1f)
+            {
+                searchSpin = 0f;
+                if (++searchIdx >= searchPoints.Count) { perception.Forget(target); target = null; searchFor = null; }
+            }
             return BtStatus.Running;
+        }
+
+        readonly System.Collections.Generic.List<Vector3> searchPoints = new();
+        PreyActor searchFor;
+        Vector3 searchFrom;
+        int searchIdx;
+
+        /// <summary>Up to 2 reachable spots 5–10 m around the predicted position that can't be seen from the last sighting.</summary>
+        void AddHidingSpots(Vector3 lastSeen, Vector3 predicted)
+        {
+            Vector3 heading = lostVelocity.sqrMagnitude > 0.5f ? lostVelocity.normalized : (predicted - hunter.transform.position).normalized;
+            var picks = new System.Collections.Generic.List<(Vector3 p, float score)>();
+            for (int k = 0; k < 10; k++)
+            {
+                Vector3 dir = Quaternion.Euler(0, k * 36f + Random.Range(-10f, 10f), 0) * Vector3.forward;
+                var s = Arena.Snap(predicted + dir * Random.Range(5f, 10f), 2f);
+                if (s == null || !Arena.Reachable(hunter.transform.position, s.Value)) continue;
+                bool hidden = Physics.Linecast(lastSeen + Vector3.up * 1.2f, s.Value + Vector3.up * 1.0f, Layers.EnvMask, QueryTriggerInteraction.Ignore);
+                if (!hidden) continue;
+                picks.Add((s.Value, Vector3.Dot(dir, heading)));
+            }
+            picks.Sort((a, b) => b.score.CompareTo(a.score));
+            for (int k = 0; k < picks.Count && k < 2; k++) searchPoints.Add(picks[k].p);
         }
 
         BtStatus UseXray()

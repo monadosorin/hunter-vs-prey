@@ -5,7 +5,7 @@ namespace HunterVsPrey
 {
     /// <summary>
     /// WASD move · Shift run · Space jump · Ctrl/C slide (hold to crouch) · LMB tag/shoot ·
-    /// Q X-Ray (shared by both Hunters) · RMB mark a ball / F find my ball (Prey) ·
+    /// Q X-Ray (shared by both Hunters) · RMB show a teammate their ball (Prey) ·
     /// Esc releases the mouse · K instant death (editor debug).
     /// </summary>
     public class HumanInput : InputProvider
@@ -42,7 +42,6 @@ namespace HunterVsPrey
             i.jump = kb.spaceKey.wasPressedThisFrame;
             i.slide = kb.leftCtrlKey.isPressed || kb.cKey.isPressed;
             i.xray = kb.qKey.wasPressedThisFrame;
-            i.locate = kb.fKey.wasPressedThisFrame;
             return i;
         }
     }

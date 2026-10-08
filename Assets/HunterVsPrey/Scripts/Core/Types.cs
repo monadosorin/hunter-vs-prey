@@ -22,7 +22,6 @@ namespace HunterVsPrey
         public bool primary;      // pressed this frame: Hunter tag / Prey paintball
         public bool xray;         // Hunter only
         public bool mark;         // Prey only: mark the ball in your crosshair for the whole team
-        public bool locate;       // Prey only: reveal where your own ball is (cooldown)
     }
 
     public static class Layers

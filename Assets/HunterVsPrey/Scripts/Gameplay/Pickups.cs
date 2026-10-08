@@ -6,11 +6,12 @@ namespace HunterVsPrey
     public class Ball : MonoBehaviour
     {
         public PreyColor Color { get; private set; }
-        /// <summary>A Prey pointed it out: every Prey sees it through walls until it's collected.</summary>
-        public bool Marked { get; private set; }
+        /// <summary>A Prey pointed it out: every Prey sees it through walls for a few seconds.</summary>
+        public bool Marked => Time.time < markedUntil;
+        float markedUntil = -1f;
         Vector3 basePos;
 
-        public void Mark() => Marked = true;
+        public void Mark(float duration) => markedUntil = Time.time + duration;
 
         public static Ball Spawn(PreyColor c, Vector3 pos)
         {

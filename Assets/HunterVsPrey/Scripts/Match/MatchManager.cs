@@ -41,13 +41,26 @@ namespace HunterVsPrey
         public float TeamXrayCd { get; private set; }
         public float TeamXrayLeft { get; private set; }
         public HunterActor XrayUser { get; private set; }
+        /// <summary>The cooldown the current X-Ray started with (for the HUD bar).</summary>
+        public float TeamXrayCdMax { get; private set; } = HunterActor.XrayCooldown;
+
+        /// <summary>X-Ray cooldown = 20 s × 4 / Prey alive: the fewer Prey left, the rarer it gets (4 → 20 s, 2 → 40 s, 1 → 80 s).</summary>
+        public float XrayCooldownNow
+        {
+            get
+            {
+                int alive = 0;
+                foreach (var p in Prey) if (p.IsActive) alive++;
+                return HunterActor.XrayCooldown * 4f / Mathf.Max(1, alive);
+            }
+        }
 
         public bool TryUseXray(HunterActor h)
         {
             if (TeamXrayCd > 0f) return false;
             XrayUser = h;
             TeamXrayLeft = HunterActor.XrayDuration;
-            TeamXrayCd = HunterActor.XrayCooldown;
+            TeamXrayCd = TeamXrayCdMax = XrayCooldownNow;
             Log($"{h.DisplayName} used the team X-Ray");
             return true;
         }
@@ -75,6 +88,12 @@ namespace HunterVsPrey
             {
                 pendingStart = null;
                 BeginMatch(s.role, s.color, s.slot);
+            }
+            else
+            {
+                // main menu: the cursor lock survives a scene reload, so free the mouse to click the buttons
+                Cursor.lockState = CursorLockMode.None;
+                Cursor.visible = true;
             }
         }
 
@@ -332,13 +351,15 @@ namespace HunterVsPrey
                 PlaceGate();
                 Log("The Gate was camped and teleported!");
             }
+            // Escaping takes you out of the arena; the match goes on until every surviving Prey is out (see CheckWin)
             foreach (var p in Prey)
             {
                 if (p.IsActive && Gate.Contains(p.transform.position + Vector3.up))
                 {
                     p.Escape();
-                    EndMatch(Team.Prey, $"{p.DisplayName} escaped through the Gate!");
-                    return;
+                    int inside = Prey.Count(q => q.IsActive);
+                    if (inside > 0) Log($"{p.DisplayName} escaped! {inside} Prey still inside"); // the last one out is announced by the result
+                    if (p.IsHuman) Cam.StartSpectating();
                 }
             }
         }
@@ -358,10 +379,25 @@ namespace HunterVsPrey
 
         // ---------------- end ----------------
 
+        /// <summary>
+        /// Prey win when every Prey still alive has escaped (1 left alive → that one getting out is enough).
+        /// Hunters win if they catch everyone, or if time runs out with any Prey still inside.
+        /// </summary>
         void CheckWin()
         {
-            if (Prey.All(p => p.Dead)) EndMatch(Team.Hunter, "All Prey were caught!");
-            else if (TimeLeft <= 0f) { TimeLeft = 0f; EndMatch(Team.Hunter, "Time's up!"); }
+            int escaped = Prey.Count(p => p.Escaped);
+            if (!Prey.Any(p => p.IsActive))
+            {
+                if (escaped == 0) EndMatch(Team.Hunter, "All Prey were caught!");
+                else EndMatch(Team.Prey, escaped == 1
+                    ? $"{Prey.First(p => p.Escaped).DisplayName} escaped through the Gate!"
+                    : $"{escaped} Prey escaped through the Gate!");
+            }
+            else if (TimeLeft <= 0f)
+            {
+                TimeLeft = 0f;
+                EndMatch(Team.Hunter, escaped > 0 ? $"Time's up! {Prey.Count(p => p.IsActive)} Prey didn't make it out" : "Time's up!");
+            }
         }
 
         void EndMatch(Team winner, string why)

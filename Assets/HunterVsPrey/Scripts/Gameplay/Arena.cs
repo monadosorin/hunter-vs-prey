@@ -116,10 +116,10 @@ namespace HunterVsPrey
         }
 
         /// <summary>
-        /// Gate validation. A random spot is accepted only if:
-        ///  1. it is on the floor (navmesh, ground level)
-        ///  2. the gate frame doesn't overlap any wall/obstacle
-        ///  3. there's open clearance in front of and behind the gate (not wedged in a corner)
+        /// Gate validation. The Gate always stands against the OUTER wall (an exit out of the arena), at a random spot:
+        ///  1. on the floor (navmesh, ground level) right in front of the outer wall
+        ///  2. the gate frame doesn't overlap any obstacle
+        ///  3. there's open clearance in front of it (not blocked by cover)
         ///  4. every living Prey can actually path to it
         ///  5. (fairness) it's not right next to a Hunter or where the gate just was
         /// Otherwise reroll. After many failures step 5 is relaxed so it always resolves.
@@ -127,24 +127,34 @@ namespace HunterVsPrey
         public static bool TryGateSpot(List<Vector3> preyPositions, List<Vector3> hunterPositions, Vector3? previous,
             out Vector3 pos, out float yaw)
         {
-            for (int attempt = 0; attempt < 120; attempt++)
+            for (int attempt = 0; attempt < 160; attempt++)
             {
-                bool strict = attempt < 80;
-                yaw = Random.value < 0.5f ? 0f : 90f;
-                var s = Snap(RandomPoint(), 2f);
-                pos = s ?? Vector3.zero;
-                if (s == null || pos.y > 0.3f) continue;                                         // 1. floor
+                bool strict = attempt < 110;
+                // pick one of the 4 outer walls and a point along it; the gate faces into the arena
+                int side = Random.Range(0, 4);
+                float along = Random.Range(-Half + 3f, Half - 3f);
+                const float FromWall = 0.45f;
+                Vector3 inward = side switch { 0 => Vector3.back, 1 => Vector3.forward, 2 => Vector3.left, _ => Vector3.right };
+                Vector3 wish = side switch
+                {
+                    0 => new Vector3(along, 0, Half - FromWall),   // north wall
+                    1 => new Vector3(along, 0, -Half + FromWall),  // south wall
+                    2 => new Vector3(Half - FromWall, 0, along),   // east wall
+                    _ => new Vector3(-Half + FromWall, 0, along),  // west wall
+                };
+                yaw = side < 2 ? 0f : 90f;
+                pos = wish;
+                var s = Snap(wish + inward * 0.8f, 1.5f);
+                if (s == null || s.Value.y > 0.3f) continue;                                     // 1. floor next to the wall
 
                 var rot = Quaternion.Euler(0, yaw, 0);
-                Vector3 frame = new(Gate.Width / 2 + 0.5f, Gate.Height / 2, 0.6f);
+                Vector3 frame = new(Gate.Width / 2 + 0.4f, Gate.Height / 2, 0.2f);
                 if (Physics.CheckBox(pos + Vector3.up * (Gate.Height / 2 + 0.1f), frame, rot,
-                        Layers.EnvMask, QueryTriggerInteraction.Ignore)) continue;                 // 2. no wall overlap
+                        Layers.EnvMask, QueryTriggerInteraction.Ignore)) continue;                 // 2. no overlap
 
-                Vector3 fwd = rot * Vector3.forward;
-                Vector3 clear = new(Gate.Width / 2, 1.1f, 1.25f);
-                if (Physics.CheckBox(pos + fwd * 2f + Vector3.up * 1.2f, clear, rot, Layers.EnvMask, QueryTriggerInteraction.Ignore) ||
-                    Physics.CheckBox(pos - fwd * 2f + Vector3.up * 1.2f, clear, rot, Layers.EnvMask, QueryTriggerInteraction.Ignore))
-                    continue;                                                                       // 3. clearance
+                Vector3 clear = new(Gate.Width / 2, 1.1f, 1.0f);
+                if (Physics.CheckBox(pos + inward * 1.6f + Vector3.up * 1.2f, clear, rot, Layers.EnvMask, QueryTriggerInteraction.Ignore))
+                    continue;                                                                       // 3. clearance in front
 
                 bool reachable = true;
                 foreach (var p in preyPositions) if (!Reachable(p, pos)) { reachable = false; break; }

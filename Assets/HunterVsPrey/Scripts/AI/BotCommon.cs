@@ -364,6 +364,9 @@ namespace HunterVsPrey
             return exploreTarget;
         }
 
+        /// <summary>Pick a fresh exploration target next time (e.g. the old one leads back toward a Hunter).</summary>
+        protected void NewExploreTarget() => exploreTimer = 0f;
+
         // ---------------- movement ----------------
 
         NavMeshPath path;

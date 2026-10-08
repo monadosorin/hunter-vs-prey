@@ -171,6 +171,46 @@ namespace HunterVsPrey.EditorTools
             foreach (var p in new[] { new Vector3(-46.5f, 0, -20), new Vector3(-46.5f, 0, 22), new Vector3(46.5f, 0, -24), new Vector3(46.5f, 0, 8),
                                       new Vector3(-24, 0, -46.5f), new Vector3(26, 0, -46.5f), new Vector3(-26, 0, 46.5f), new Vector3(22, 0, 46.5f) })
                 Box("Ring_Barrier", p + Vector3.up * 0.35f, new Vector3(1.5f, 0.7f, 1.5f), lowMat);
+
+            // tall cover against the outer wall every ~10 m, so the ring lane isn't one long open sightline
+            // (kept clear of the spawns; each leaves a ≥1.6 m gap to walk past)
+            var ring = new (int side, float along, int type)[]
+            {
+                (0, -40, 1), (0, -34, 0), (0, -19, 2), (0, 18, 0), (0, 30, 1), (0, 40, 0),   // north (Prey spawn x -12..12)
+                (1, -40, 0), (1, -32, 1), (1, -14, 0), (1, 14, 2), (1, 34, 0), (1, 41, 1),   // south (Hunter spawn x ±4)
+                (2, -38, 1), (2, -14, 0), (2, 0, 2), (2, 18, 0), (2, 30, 1), (2, 40, 0),     // east
+                (3, -38, 0), (3, -30, 1), (3, -6, 0), (3, 8, 2), (3, 30, 0), (3, 40, 1),     // west
+            };
+            foreach (var (side, along, type) in ring) RingCover(side, along, type);
+        }
+
+        /// <summary>
+        /// Cover piece standing against an outer wall (side 0 = north, 1 = south, 2 = east, 3 = west):
+        /// 0 = wall stub sticking out 1.4 m, 1 = thick pillar, 2 = crate stack (climbable).
+        /// </summary>
+        static void RingCover(int side, float along, int type)
+        {
+            Vector3 Point(float fromWall) => side switch
+            {
+                0 => new Vector3(along, 0, Half - fromWall),
+                1 => new Vector3(along, 0, -Half + fromWall),
+                2 => new Vector3(Half - fromWall, 0, along),
+                _ => new Vector3(-Half + fromWall, 0, along),
+            };
+            float yaw = side < 2 ? 0f : 90f; // local z points away from the wall
+            switch (type)
+            {
+                case 0:
+                    Box("Ring_Stub", Point(0.7f) + Vector3.up * (WallH / 2), new Vector3(0.6f, WallH, 1.4f), wallMat, yaw);
+                    break;
+                case 1:
+                    Box("Ring_Pillar", Point(0.65f) + Vector3.up * (WallH / 2), new Vector3(1.3f, WallH, 1.3f), wallMat, yaw);
+                    break;
+                default:
+                    Box("Ring_Crate", Point(0.7f) + Vector3.up * 0.7f, new Vector3(1.6f, 1.4f, 1.4f), climbMat, yaw);
+                    Box("Ring_CrateTop", Point(0.6f) + Vector3.up * 1.75f, new Vector3(1.1f, 0.7f, 1.1f), climbMat, yaw + 15f);
+                    break;
+            }
         }
 
         static void StreetProp(Vector3 p, bool alongZ, int type, System.Random rng)

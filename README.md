@@ -16,8 +16,8 @@ If the map ever looks wrong, rebuild it: menu **Hunter vs Prey → Build Arena S
 
 WASD move · Shift run · Space jump · Ctrl/C slide (hold to crouch) · Esc frees the mouse
 
-- **Hunter:** LMB tag · Q team X-Ray
-- **Prey:** LMB paintball · RMB mark a ball for the team · F find my ball
+- **Hunter:** LMB tag · Q team X-Ray (cooldown 20 s × 4 / Prey alive: 20 s with 4 Prey, 80 s with 1) · a paintball stuns for 2 s, then slows to half speed for 1.5 s
+- **Prey:** LMB paintball · RMB show a teammate their ball (indicator for 10 s, 20 s cooldown)
 - **When you're out:** R restart · M main menu · T fast-forward (editor only)
 - **Debug (editor):** K instant death · P save a stuck spot · B show AI thoughts
 
